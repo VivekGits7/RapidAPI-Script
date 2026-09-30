@@ -18,12 +18,11 @@ FALLBACK: complete-details is flaky (hangs → read timeout, or returns an all-n
 shell even for valid articles). When it comes back unusable we compose the article
 from the lighter, reliable endpoints instead (COMPLETE_DETAILS_MAX_RETRIES caps the
 retries first so we fall back fast):
-    GET /articles/details/article-id/{articleId}/lang-id/{langId}      → specs/OEM/EAN/name + articleNo + supplierId
-    GET /articles/get-compatible-cars-by-article-number/type-id/{typeId}
-        ?articleNo=&supplierId=&countryFilterId=&langId=               → compatible cars
-The compat endpoint is keyed by articleNo+supplierId (not articleId), which the
-individual-details response hands us. Image is skipped on the fallback path — the
-articles-list phase already stored it.
+    GET  /articles/details/article-id/{articleId}/lang-id/{langId}     → specs/OEM/EAN/name
+    POST /articles/article-id-complete-details  (form body)            → compatible cars
+The by-article-number compat endpoint this used before is deprecated and no longer returns
+compatibleCars, so fitment comes from the POST twin of complete-details instead. Image is
+skipped on the fallback path — the articles-list phase already stored it.
 """
 
 import asyncio
@@ -32,8 +31,8 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 from config import settings
-from dumper.http_client import api_get
-from dumper.state import DumpEntityState, DumpStage, StopRequested
+from dumper.http_client import api_get, api_post
+from dumper.state import DumpEntityState, DumpStage, StopRequested, crawl_type_id
 from dumper.unparsed import UnparsedEntity, UnparsedReason, log_unparsed
 from logger import get_logger
 from services.db import bulk_insert, execute_command, execute_query
@@ -43,7 +42,7 @@ logger = get_logger("dumper.details")
 _DETAILS_PATH = "/articles/article-complete-details/type-id/{type_id}"
 
 _FALLBACK_DETAILS_PATH = "/articles/details/article-id/{article_id}/lang-id/{lang_id}"
-_FALLBACK_COMPAT_PATH = "/articles/get-compatible-cars-by-article-number/type-id/{type_id}"
+_FALLBACK_COMPAT_PATH = "/articles/article-id-complete-details"
 
 
 async def complete_articles_for_model(model_id: str, check_stop=None) -> bool:
@@ -137,7 +136,7 @@ async def _complete_article(article_id: str, external_id: int) -> bool:
 async def _fetch_complete_details(external_id: int):
     """Call the aggregate complete-details endpoint (EN + AR) with the flaky-endpoint
     retry cap, so we fall back fast instead of burning the global retry budget."""
-    path = _DETAILS_PATH.format(type_id=settings.DEFAULT_TYPE_ID)
+    path = _DETAILS_PATH.format(type_id=crawl_type_id(settings.DEFAULT_TYPE_ID))
     retries = settings.COMPLETE_DETAILS_MAX_RETRIES
     timeout = settings.COMPLETE_DETAILS_TIMEOUT
     en_params = {"articleId": external_id, "langId": settings.DEFAULT_LANG_ID,
@@ -184,9 +183,9 @@ async def _persist_from_complete_details(article_id: str, external_id: int,
 async def _complete_article_via_fallback(article_id: str, external_id: int) -> bool:
     """Compose the article from lighter endpoints when complete-details is unusable.
 
-    individual-details → specs/OEM/EAN/name (+ articleNo + supplierId), then the
-    dedicated compat endpoint keyed by (articleNo + supplierId) → compatible cars.
-    Image is intentionally skipped here — the articles-list phase already stored it.
+    individual-details → specs/OEM/EAN/name, then the POST twin of complete-details →
+    compatible cars. Image is intentionally skipped here — the articles-list phase
+    already stored it.
     """
     en_path = _FALLBACK_DETAILS_PATH.format(article_id=external_id, lang_id=settings.DEFAULT_LANG_ID)
     if settings.BILINGUAL:
@@ -220,43 +219,37 @@ async def _complete_article_via_fallback(article_id: str, external_id: int) -> b
     ar_specs = ar_data.get("articleAllSpecifications") if isinstance(ar_data, dict) else None
     n_specs = await _persist_specs(article_id, en_data.get("articleAllSpecifications"), ar_specs)
     n_oem = await _persist_oem(article_id, en_data.get("articleOemNo"))
-    n_compat = await _persist_fallback_compat(article_id, art.get("articleNo"), art.get("supplierId"))
+    n_compat = await _persist_fallback_compat(article_id, external_id)
 
     logger.info(f"  Article {external_id} complete (fallback): {n_specs} specs, {n_oem} OEM, {n_compat} compat")
     return True
 
 
-async def _persist_fallback_compat(article_id: str, article_no: Optional[str],
-                                   supplier_id: Any) -> int:
-    """Fetch compatible cars from the dedicated endpoint (keyed by articleNo + supplierId,
-    since individual-details carries no fitment) and persist them. EN + AR for the
-    localized typeEngineName."""
-    if not article_no or supplier_id is None:
-        return 0
-    path = _FALLBACK_COMPAT_PATH.format(type_id=settings.DEFAULT_TYPE_ID)
-    en_params = {"articleNo": article_no, "supplierId": supplier_id,
-                 "countryFilterId": settings.DEFAULT_COUNTRY_FILTER_ID, "langId": settings.DEFAULT_LANG_ID}
+async def _persist_fallback_compat(article_id: str, external_id: int) -> int:
+    """Fetch compatible cars from the POST twin of complete-details (individual-details
+    carries no fitment) and persist them. EN + AR for the localized typeEngineName.
+    Same short retry cap and timeout as the GET aggregate, it is the same heavy payload."""
+    retries = settings.COMPLETE_DETAILS_MAX_RETRIES
+    timeout = settings.COMPLETE_DETAILS_TIMEOUT
+    en_form = {"articleId": str(external_id), "typeId": str(crawl_type_id(settings.DEFAULT_TYPE_ID)),
+               "countryFilterId": str(settings.DEFAULT_COUNTRY_FILTER_ID), "langId": str(settings.DEFAULT_LANG_ID)}
     if settings.BILINGUAL:
-        ar_params = {**en_params, "langId": settings.ARABIC_LANG_ID}
-        en_data, ar_data = await asyncio.gather(api_get(path, params=en_params), api_get(path, params=ar_params))
+        ar_form = {**en_form, "langId": str(settings.ARABIC_LANG_ID)}
+        en_data, ar_data = await asyncio.gather(
+            api_post(_FALLBACK_COMPAT_PATH, form_body=en_form, max_retries=retries, timeout=timeout),
+            api_post(_FALLBACK_COMPAT_PATH, form_body=ar_form, max_retries=retries, timeout=timeout),
+        )
     else:
-        en_data, ar_data = await api_get(path, params=en_params), None
+        en_data = await api_post(_FALLBACK_COMPAT_PATH, form_body=en_form, max_retries=retries, timeout=timeout)
+        ar_data = None
     return await _persist_compat(article_id, _extract_compat(en_data), _extract_compat(ar_data))
 
 
 def _extract_compat(resp: Any) -> list:
-    """Pull the compatibleCars list out of the by-article-number response shape:
-    {"articles": [{"compatibleCars": [...]}]}. Merges across all returned articles."""
-    if not isinstance(resp, dict):
-        return []
-    articles = resp.get("articles")
-    if not isinstance(articles, list):
-        return []
-    out: list = []
-    for a in articles:
-        if isinstance(a, dict) and isinstance(a.get("compatibleCars"), list):
-            out.extend(a["compatibleCars"])
-    return out
+    """Pull the compatibleCars list out of the complete-details shape: {"article": {"compatibleCars": [...]}}."""
+    art = resp.get("article") if isinstance(resp, dict) else None
+    cars = art.get("compatibleCars") if isinstance(art, dict) else None
+    return cars if isinstance(cars, list) else []
 
 
 async def _persist_specs(article_id: str, en_specs: Any, ar_specs: Any) -> int:

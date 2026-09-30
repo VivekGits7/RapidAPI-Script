@@ -82,6 +82,23 @@ guvrun -m dumper.cli ensure-schema   # create/repair the browse + search objects
 guvrun backfill_category_links.py    # link table backfill, server side loop + parallel workers, live progress bar; --status shows how far it is
 ```
 
+### Vehicle types (`--vehicle-type pc | cv | bus`)
+
+Every command takes `--vehicle-type`, default `pc`. Each type has its own targets and its own
+resumable job, so PC, CV and bus runs never touch each other.
+
+```bash
+guvrun -m dumper.cli run --vehicle-type cv
+guvrun -m dumper.cli run --vehicle-type bus
+```
+
+**Bus is stored as BUS but fetched through CV.** RapidAPI lists bus makes and models under type 8,
+but answers `"not supported yet"` for their vehicles and `null` for their categories. The same buses
+come back in full under type 2 (CV) with `bodyType: Bus`. So a bus run calls the API with type 2 and
+saves models, vehicles and categories under the BUS type. The mapping lives in one place,
+`CRAWL_TYPE_ID_OVERRIDES` in `dumper/state.py`. A make and model must be a target of one type only,
+a vehicle id can be stored once.
+
 > **`--limit` = number of `dump_targets.csv` rows (make/model targets)** processed
 > this run — **not** vehicles/articles within a target. Omit (or `0`) = process
 > all, resuming where it left off. `--limit 1` = one target = a smoke test.
@@ -91,13 +108,13 @@ guvrun backfill_category_links.py    # link table backfill, server side loop + p
 > Design rationale + the full optimization story: **`archive/OPTIMIZATION_PLAN.md`**.
 
 ```bash
-guvrun -m dumper.cli run --workers 8 --rate 90 --makes 5,16,21 --limit 10
+guvrun -m dumper.cli run --workers 8 --rate 22 --makes 5,16,21 --limit 10
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--workers 8` | How many **targets (models) are crawled simultaneously** inside one process. Each worker atomically claims a target (`FOR UPDATE SKIP LOCKED` — two workers can never grab the same model), crawls it to full depth, then claims the next. |
-| `--rate 90` | **Global speed limit (req/s)** — a token bucket shared by ALL workers combined. Plan allows 100/s; 90 leaves margin so a 429 never cooldown-stalls the single key. |
+| `--rate 22` | **Global speed limit (req/s)** — a token bucket shared by ALL workers combined. The MEGA plan allows 25/s, measured 2026-09-30; 22 leaves margin so a 429 never cooldown-stalls the single key. Anything above `RAPIDAPI_RATE_LIMIT_PER_SEC` is clamped. |
 | `--makes 5,16,21` | Only claim targets of these `tec_manufacturer_id`s (5 = AUDI, 16 = BMW, 21 = CITROËN). Omit = all 508 targets, A→Z. |
 | `--limit 10` | Stop after N targets **total across all workers**, then pause cleanly. |
 
@@ -112,28 +129,28 @@ so plain `guvrun -m dumper.cli run` does the right thing with zero flags.
 **Common recipes:**
 
 ```bash
-guvrun -m dumper.cli run --workers 8 --rate 90            # full speed, everything
+guvrun -m dumper.cli run --workers 12 --rate 22           # full speed, everything
 guvrun -m dumper.cli run --limit 1 --workers 2 --rate 5   # careful smoke test
-guvrun -m dumper.cli run --makes 74,183,121 --workers 8 --rate 90   # priority brands first
+guvrun -m dumper.cli run --makes 74,183,121 --workers 12 --rate 22  # priority brands first
 ```
 
 **Multi-terminal split (optional):** `--makes` lets you partition makes across
 separate processes, each independently resumable:
 
 ```bash
-# Terminal 1: guvrun -m dumper.cli run --makes 74      --rate 30 --workers 3
-# Terminal 2: guvrun -m dumper.cli run --makes 183,184 --rate 30 --workers 3
-# Terminal 3: guvrun -m dumper.cli run --makes 121,88  --rate 30 --workers 3
+# Terminal 1: guvrun -m dumper.cli run --makes 74      --rate 7 --workers 3
+# Terminal 2: guvrun -m dumper.cli run --makes 183,184 --rate 7 --workers 3
+# Terminal 3: guvrun -m dumper.cli run --makes 121,88  --rate 7 --workers 3
 ```
 
-Two rules: make lists must **not overlap**, and the rates must **sum ≤ 90** (the
-bucket is per-process; the plan's 100/s is shared by everything on the key). The
+Two rules: make lists must **not overlap**, and the rates must **sum ≤ 22** (the
+bucket is per-process; the plan's 25/s is shared by everything on the key). The
 single-process default is still preferred — one bucket wastes zero budget when a
 make finishes early.
 
 > **Quota reality:** these flags control *how fast and in what order* you spend
-> quota, not how much you have — at 90 req/s the month's 999,500 calls burn in
-> ~3 hours, then the job auto-pauses until next month.
+> quota, not how much you have — at 22 req/s the month's 999,500 calls burn in
+> ~13 hours, then the job auto-pauses until next month.
 
 ### Run as a server (control surface)
 

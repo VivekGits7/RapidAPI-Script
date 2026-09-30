@@ -51,11 +51,14 @@ async def _make_request(
     json_body: Optional[dict] = None,
     max_retries: Optional[int] = None,
     timeout: Optional[float] = None,
+    form_body: Optional[dict] = None,
 ) -> Optional[Any]:
     """One HTTP call with key rotation + retry on transient errors.
 
     Returns parsed JSON (dict or list) on success, None if every retry failed.
     `max_retries` overrides the global cap for flaky endpoints (e.g. complete-details).
+    `form_body` sends a form-encoded body, which the API's POST endpoints need; a JSON body
+    gets an all-null shell back from them.
     On `AllKeysExhaustedError` (from key_manager) propagates up — caller should treat as fatal.
     """
     retry_ceiling = max_retries if max_retries is not None else settings.MAX_TRANSIENT_RETRIES
@@ -63,23 +66,24 @@ async def _make_request(
     bucket = get_bucket()
 
     while transient_retries <= retry_ceiling:
-        # Global pacing: one token per attempt, shared by all workers.
-        await bucket.acquire()
-
         key_id, key_value = await api_key_manager.get_next_key()
+        # Global pacing: one token per attempt, shared by all workers. Taken after the key wait,
+        # requests parked on a cooldown otherwise all fire at once the moment it ends.
+        await bucket.acquire()
         url = f"{settings.RAPIDAPI_BASE_URL}{path}"
         headers = {
             "x-rapidapi-key": key_value,
             "x-rapidapi-host": settings.RAPIDAPI_HOST,
-            "Content-Type": "application/json",
         }
+        if form_body is None:
+            headers["Content-Type"] = "application/json"
 
         try:
             logger.info(f"→ {method} {path}{f' {params}' if params else ''} (key {key_id})")
             started = time.perf_counter()
             client = await get_http_client()
             resp = await client.request(
-                method, url, headers=headers, params=params, json=json_body,
+                method, url, headers=headers, params=params, json=json_body, data=form_body,
                 timeout=timeout if timeout is not None else settings.RAPIDAPI_TIMEOUT,
             )
             elapsed = time.perf_counter() - started
@@ -142,5 +146,8 @@ async def api_get(
 async def api_post(
     path: str, json_body: Optional[dict] = None,
     max_retries: Optional[int] = None, timeout: Optional[float] = None,
+    form_body: Optional[dict] = None,
 ) -> Optional[Any]:
-    return await _make_request("POST", path, json_body=json_body, max_retries=max_retries, timeout=timeout)
+    return await _make_request(
+        "POST", path, json_body=json_body, max_retries=max_retries, timeout=timeout, form_body=form_body
+    )

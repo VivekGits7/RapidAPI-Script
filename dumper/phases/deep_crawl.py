@@ -20,6 +20,7 @@ import asyncpg
 from config import settings
 from logger import get_logger
 from dumper.http_client import api_get
+from dumper.state import crawl_type_id
 from dumper.unparsed import UnparsedEntity, UnparsedReason, log_unparsed
 from services.db import bulk_insert, execute_command, execute_query
 
@@ -161,12 +162,15 @@ def _build_vehicle_row(it: dict, ar_by_id: dict, model_id: str, vehicle_type_id:
     fuel-skipped variants (stored/listed but not deep-crawled)."""
     vid = int(it["vehicleId"])
     ar = ar_by_id.get(vid, {})
+    # CV and bus rows carry powerKwStart / powerPsStart where PC rows carry powerKw / powerPs.
+    power_kw = it.get("powerKw") or it.get("powerKwStart")
+    power_ps = it.get("powerPs") or it.get("powerPsStart")
     return (
         str(uuid.uuid4()), vid, model_id, vehicle_type_id, settings.DEFAULT_LANG_ID, settings.DEFAULT_COUNTRY_FILTER_ID,
         it.get("manufacturerName"), it.get("modelName"),
         it.get("typeEngineName"), ar.get("typeEngineName"),
         _parse_date(it.get("constructionIntervalStart")), _parse_date(it.get("constructionIntervalEnd")),
-        _parse_decimal(it.get("powerKw")), _parse_decimal(it.get("powerPs")), it.get("capacityTax"),
+        _parse_decimal(power_kw), _parse_decimal(power_ps), it.get("capacityTax"),
         it.get("fuelType"), ar.get("fuelType"), it.get("bodyType"), ar.get("bodyType"),
         _parse_int(it.get("numberOfCylinders")), _parse_decimal(it.get("capacityLt")),
         _parse_decimal(it.get("capacityTech")), it.get("engineCodes"), _parse_int(it.get("engId")),
@@ -226,7 +230,7 @@ async def _mark_model_vehicles_done(model_id: str, status: str, message: Optiona
 async def fetch_categories_for_vehicle(vehicle: asyncpg.Record) -> None:
     vehicle_id = vehicle["vehicle_id"]
     api_vid = int(vehicle["api_vehicle_id"])
-    api_type_id = int(vehicle["api_type_id"])
+    api_type_id = crawl_type_id(vehicle["api_type_id"])
     type_code = vehicle["type_code"]
     vehicle_type_id = vehicle["vehicle_type_id"]
     lang_id = settings.DEFAULT_LANG_ID

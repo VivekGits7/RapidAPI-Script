@@ -26,7 +26,7 @@ from typing import Any, Optional
 from config import settings
 from dumper import product_names
 from dumper.http_client import api_get
-from dumper.state import DumpEntityState, DumpStage, StopRequested
+from dumper.state import DumpEntityState, DumpStage, StopRequested, crawl_type_id
 from dumper.unparsed import UnparsedEntity, UnparsedReason, log_unparsed
 from logger import get_logger
 from services.db import bulk_insert, bulk_insert_returning, execute_command, execute_query
@@ -105,7 +105,7 @@ async def _mark_vca_done(vca_id: str) -> None:
 
 
 async def _fetch_article_list(vehicle_id: str, category_id: str, vca) -> bool:
-    api_type_id = int(vca["api_type_id"])
+    api_type_id = crawl_type_id(vca["api_type_id"])
     api_vid = int(vca["api_vehicle_id"])
     api_cat_id = int(vca["api_category_id"])
 
@@ -145,6 +145,10 @@ async def _fetch_article_list(vehicle_id: str, category_id: str, vca) -> bool:
 
     if not to_store:
         return True
+
+    # Every transaction writes articles in the same order. Two vehicles listing the same parts in a
+    # different order deadlocked on the article rows and on the browse link rows the insert trigger adds.
+    to_store.sort(key=lambda entry: entry[1])
 
     # FK safety: any productId the dictionary doesn't know yet gets a placeholder row first.
     await product_names.ensure_known(

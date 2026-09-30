@@ -15,8 +15,9 @@ from config import settings
 class TokenBucket:
     def __init__(self, rate: float, burst: Optional[float] = None):
         self.rate = max(0.1, float(rate))
-        # Burst = 1s worth of tokens; enough to absorb gather() pairs without spiking past the plan limit.
-        self.capacity = float(burst) if burst is not None else max(1.0, self.rate)
+        # Burst = a tenth of a second's worth. A full second of burst let a run send twice the rate
+        # right after any pause, which tripped the plan's per-second limit and cooled the key.
+        self.capacity = float(burst) if burst is not None else max(1.0, self.rate / 10)
         self._tokens = self.capacity
         self._last = time.monotonic()
         self._lock = asyncio.Lock()

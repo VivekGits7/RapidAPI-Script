@@ -6,6 +6,7 @@ Usage:
     guvrun -m dumper.cli import-targets --csv archive/new/bus_models.csv --vehicle-type bus  # load bus models
     guvrun -m dumper.cli run                        # one-shot PC dump (resumes the PC job if in flight)
     guvrun -m dumper.cli run --vehicle-type cv      # crawl the CV job (independent of PC — its own resumable job)
+    guvrun -m dumper.cli run --vehicle-type bus     # crawl the BUS job — stored as BUS, fetched through the CV API type
     guvrun -m dumper.cli run --workers 8 --rate 18  # parallel crawl at ~18 req/s (defaults from .env)
     guvrun -m dumper.cli run --makes 5,16,21        # only these tec_manufacturer_ids
     guvrun -m dumper.cli resume --vehicle-type cv   # explicit resume of the CV job (errors if none resumable)
@@ -15,6 +16,9 @@ Usage:
 
 Each vehicle type (pc | cv | bus | ...) is a SEPARATE, independently-resumable job:
 resume PC and CV whenever you want without one touching the other.
+
+RapidAPI lists bus makes and models under type 8 but answers "not supported yet" for their
+vehicles and categories, so a bus run calls the CV type and stores every row as BUS.
 """
 
 import asyncio
@@ -70,7 +74,7 @@ _run_options = [
     click.option("--vehicle-type", "vehicle_type", type=str, default=None, help="Which vehicle type to crawl: pc | cv | bus | ... or the numeric TecDoc id (default: pc). Scopes the job + targets — PC and CV are independent, each with its own resumable job."),
     click.option("--limit", type=int, default=0, help="Process at most N targets this run (0 = all). Use --limit 1 for a smoke test."),
     click.option("--workers", type=int, default=None, help="Concurrent target workers (default: DUMP_WORKERS from .env)."),
-    click.option("--rate", type=float, default=None, help="Global req/s across all workers (default: DUMP_RATE_PER_SEC; clamped to the plan's 100/s)."),
+    click.option("--rate", type=float, default=None, help="Global req/s across all workers (default: DUMP_RATE_PER_SEC; clamped to RAPIDAPI_RATE_LIMIT_PER_SEC, the plan's 25/s)."),
     click.option("--makes", type=str, default=None, help="Comma-separated tec_manufacturer_ids to crawl (e.g. 5,16,21). Omit = all."),
     click.option("--models", type=str, default=None, help="Comma-separated tec_model_ids to crawl (e.g. 4635,10615). Validated against the CSV; combine with --makes for a safety check."),
     click.option("--until", type=click.Choice(["manufacturers", "models", "vehicles", "categories", "articles", "details"]),

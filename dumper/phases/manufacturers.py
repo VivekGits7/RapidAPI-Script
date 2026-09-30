@@ -15,7 +15,7 @@ from typing import Optional
 from config import settings
 from dumper.http_client import api_get
 from dumper.id_utils import new_id
-from dumper.state import TYPE_ID_TO_CODE, VehicleTypeCode
+from dumper.state import TYPE_ID_TO_CODE, VehicleTypeCode, crawl_type_id
 from logger import get_logger
 from services.db import execute_command, execute_query_one
 
@@ -86,7 +86,8 @@ async def get_active_vehicle_type() -> Optional[dict]:
 
     The active type is `settings.DEFAULT_TYPE_ID` (1=PC, 2=CV, ...), which the CLI
     `--vehicle-type` flag sets at process start. Seeded by the reference phase;
-    returns None if reference hasn't run yet or the id is unknown.
+    returns None if reference hasn't run yet or the id is unknown. `api_type_id` is
+    the type the API is called with, which for buses is the CV type.
     """
     type_code = TYPE_ID_TO_CODE.get(int(settings.DEFAULT_TYPE_ID), VehicleTypeCode.PC.value)
     row = await execute_query_one(
@@ -97,7 +98,11 @@ async def get_active_vehicle_type() -> Optional[dict]:
         """,
         type_code,
     )
-    return dict(row) if row else None
+    if not row:
+        return None
+    active = dict(row)
+    active["api_type_id"] = crawl_type_id(active["api_type_id"])
+    return active
 
 
 async def fetch_manufacturer_image(mfg_external_id: int) -> Optional[str]:

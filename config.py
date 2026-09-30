@@ -81,8 +81,8 @@ class Settings(BaseSettings):
     POSTGRES_DB_PASSWORD: str = Field(default="", description="Database password")
 
     # ==================== DUMP TUNING ====================
-    # Plan limits: 20 requests/second, 1,000,000 requests/month (hard).
-    RAPIDAPI_RATE_LIMIT_PER_SEC: int = Field(default=100, description="Global RapidAPI rate limit (requests/second) — plan hard limit")
+    # Plan limits: MEGA measured at 25 requests/second on 2026-09-30, 1,000,000 requests/month (hard).
+    RAPIDAPI_RATE_LIMIT_PER_SEC: int = Field(default=25, description="Global RapidAPI rate limit (requests/second) — plan hard limit")
     MONTHLY_REQUEST_HARD_LIMIT: int = Field(default=1_000_000, description="RapidAPI monthly request hard limit (plan). Set 0 for an uncapped plan to turn the guard off")
     MONTHLY_REQUEST_SAFETY_BUFFER: int = Field(default=500, description="Stop this many calls BEFORE the monthly hard limit, to never overshoot")
     # 5s, not 60: the token bucket prevents 429s; a stray one must not stall every worker for a minute.
@@ -107,7 +107,7 @@ class Settings(BaseSettings):
     # One process, N concurrent target-workers, all sharing ONE token bucket that
     # caps the combined API rate. Workers = lanes; rate = the speed limit.
     DUMP_WORKERS: int = Field(default=8, description="Concurrent target (make/model) workers in one process")
-    DUMP_RATE_PER_SEC: float = Field(default=90.0, description="Global token-bucket fill rate (req/s) — keep under the plan's 100/s (10% margin avoids 429s)")
+    DUMP_RATE_PER_SEC: float = Field(default=22.0, description="Global token-bucket fill rate (req/s) — keep under the plan's 25/s (a 429 cools the key and stalls every worker)")
     LIST_FANOUT: int = Field(default=8, description="Concurrent leaf-category article-list fetches per target")
     DETAILS_FANOUT: int = Field(default=4, description="Concurrent article-details fetches per target")
     KEY_FLUSH_INTERVAL_SEC: float = Field(default=5.0, description="Seconds between key/quota counter flushes to the DB")

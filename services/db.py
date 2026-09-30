@@ -4,8 +4,10 @@ All dumper and router code goes through these helpers — never spin up a
 direct asyncpg connection elsewhere.
 """
 
+import asyncio
+import random
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 import asyncpg
 
@@ -106,6 +108,26 @@ def _chunk_size(ncols: int) -> int:
     return max(1, _MAX_BIND_PARAMS // max(1, ncols))
 
 
+_DEADLOCK_RETRIES = 4
+
+
+async def _retry_on_deadlock(run: Callable[[], Awaitable[Any]]) -> Any:
+    """Run one statement again when Postgres picks it as the deadlock victim.
+
+    Two workers writing overlapping rows can lock them in a different order, and the backend's
+    search queue triggers on the catalog tables add locks the dumper cannot order. The victim
+    statement is rolled back whole, so running it again is safe.
+    """
+    for attempt in range(1, _DEADLOCK_RETRIES + 1):
+        try:
+            return await run()
+        except asyncpg.DeadlockDetectedError:
+            if attempt == _DEADLOCK_RETRIES:
+                raise
+            logger.warning(f"Deadlock on a bulk write, retry {attempt}/{_DEADLOCK_RETRIES - 1}")
+            await asyncio.sleep(0.2 * attempt + random.random() * 0.3)
+
+
 async def bulk_insert(table: str, columns: list[str], rows: list[tuple], conflict: str = "") -> int:
     """Insert many rows in ONE round-trip per chunk (a single multi-row INSERT).
 
@@ -126,7 +148,8 @@ async def bulk_insert(table: str, columns: list[str], rows: list[tuple], conflic
                 for r in range(len(batch))
             )
             flat = [v for row in batch for v in row]
-            await conn.execute(f"INSERT INTO {table} ({col_sql}) VALUES {values_sql} {conflict}", *flat)
+            statement = f"INSERT INTO {table} ({col_sql}) VALUES {values_sql} {conflict}"
+            await _retry_on_deadlock(lambda: conn.execute(statement, *flat))
     return len(rows)
 
 
@@ -151,10 +174,8 @@ async def bulk_insert_returning(
                 for r in range(len(batch))
             )
             flat = [v for row in batch for v in row]
-            recs = await conn.fetch(
-                f"INSERT INTO {table} ({col_sql}) VALUES {values_sql} {conflict} RETURNING {returning}",
-                *flat,
-            )
+            statement = f"INSERT INTO {table} ({col_sql}) VALUES {values_sql} {conflict} RETURNING {returning}"
+            recs = await _retry_on_deadlock(lambda: conn.fetch(statement, *flat))
             out.extend(recs)
     return out
 

@@ -106,6 +106,15 @@ TYPE_ID_TO_CODE: dict[int, str] = {
 
 CODE_TO_TYPE_ID: dict[str, int] = {v: k for k, v in TYPE_ID_TO_CODE.items()}
 
+# RapidAPI lists bus models under type 8 but answers "not supported yet" for their vehicles and
+# categories there; the same buses come back in full under the CV type. Rows stay stored as BUS.
+CRAWL_TYPE_ID_OVERRIDES: dict[int, int] = {8: 2}
+
+
+def crawl_type_id(type_id: int) -> int:
+    """API type id to put in request paths for rows stored under this vehicle type."""
+    return CRAWL_TYPE_ID_OVERRIDES.get(int(type_id), int(type_id))
+
 
 # API-name as returned by `GET /types/list-vehicles-type` → our short code.
 # Useful when we receive the API's `vehicleType` string and want our code.
