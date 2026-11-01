@@ -237,12 +237,20 @@ the Arabic engine/fuel/body text.
    (and any `VEHICLE_FUEL_EXCLUDE_PREFIXES`) variants are stored too, but flagged
    `is_fuel_excluded` (crawl_rank NULL)** so they're listed in the DB yet skipped from the
    deep crawl. Flip the flag later to deep-crawl one — zero re-fetch.
-3. **Rank the non-excluded variants latest-first**: still-in-production engines first, then
-   newest end-date, then newest start-date.
-4. **Only the top `MAX_VEHICLES_PER_MODEL` non-excluded variants get deep-crawled** in the
+   `VEHICLE_FUEL_EXCLUDE_CONTAINS` does the same for words found anywhere in the fuel
+   name, which is how `Petrol/Ethanol` and `Petrol/Compressed Natural Gas (CNG)` are caught.
+3. **Year filter**: variants whose production does not overlap
+   `VEHICLE_YEAR_FROM`..`VEHICLE_YEAR_TO` (2000 to 2025) are stored with crawl_rank NULL.
+4. **Rank the rest latest-first**: still-in-production engines first, then newest end-date,
+   then newest start-date.
+5. **Same-engine repeats**: the API lists one engine several times for different markets or
+   date ranges. Same name + body + fuel + capacity + power + engine codes keeps only the newest
+   copy; the others are stored with crawl_rank NULL.
+6. **Only the top `MAX_VEHICLES_PER_MODEL` ranked variants get deep-crawled** in the
    next phases (the rest stay saved as records, crawl later by raising the limit).
-   **`MAX_VEHICLES_PER_MODEL=0` means no cap — crawl ALL non-excluded variants** (the
-   current setting).
+   **`MAX_VEHICLES_PER_MODEL=0` means no cap — crawl ALL ranked variants.** The current
+   setting is 6, sized for the ContactCars top-100 run. A row with crawl_rank NULL is never
+   crawled, whatever the cap.
 
 > **Why a cap?** Deep-crawling every engine variant multiplies every downstream call, so
 > `MAX_VEHICLES_PER_MODEL` is the single biggest budget lever — set it to the latest N to
@@ -252,10 +260,10 @@ the Arabic engine/fuel/body text.
 flowchart TD
     M[Model] --> C["1 endpoint × 2 calls<br/>list-vehicles-types · EN + AR"]
     C --> ALL["Full list of engine variants<br/>(e.g. 24 vehicles)"]
-    ALL --> STORE[(Store ALL · ranked latest-first<br/>diesel stored + flagged)]
-    STORE --> TOP{{Take top MAX_VEHICLES_PER_MODEL<br/>0 = all non-diesel}}
+    ALL --> STORE[(Store ALL · ranked latest-first<br/>fuel, year, same-engine skips stored unranked)]
+    STORE --> TOP{{Take top MAX_VEHICLES_PER_MODEL<br/>0 = all ranked}}
     TOP --> DEEP[These → deep crawl<br/>categories + articles]
-    STORE -.->|lower-ranked / diesel stay as<br/>records, crawl later| LATER[/not crawled now/]
+    STORE -.->|lower-ranked / skipped stay as<br/>records, crawl later| LATER[/not crawled now/]
     style TOP fill:#fff9c4,stroke:#f9a825
     style DEEP fill:#e8f5e9,stroke:#388e3c
 ```

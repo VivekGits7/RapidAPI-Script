@@ -72,6 +72,18 @@ class Settings(BaseSettings):
         default="diesel,ديزل",
         description="fuelType prefixes to STORE-BUT-SKIP from the deep crawl (EN+AR, comma-separated, case-insensitive). Empty = deep-crawl all.",
     )
+    # Mixed fuels start with "Petrol" (Petrol/Ethanol, Petrol/Compressed Natural Gas (CNG)),
+    # so a prefix never catches them; these words skip a variant wherever they appear.
+    VEHICLE_FUEL_EXCLUDE_CONTAINS: str = Field(
+        default="ethanol,إيثانول,natural gas,cng,غاز طبيعي,hydrogen,هيدروجين",
+        description="fuelType words that STORE-BUT-SKIP a variant wherever they appear (EN+AR, comma-separated, case-insensitive). Empty = off.",
+    )
+
+    # ==================== PRODUCTION YEAR FILTER (store-but-skip) ====================
+    # A variant is deep-crawled only if its construction interval overlaps these years.
+    # Out-of-range variants are stored with crawl_rank NULL, like fuel-skipped ones.
+    VEHICLE_YEAR_FROM: int = Field(default=2000, description="Skip variants whose production ended before this year (0 = off)")
+    VEHICLE_YEAR_TO: int = Field(default=2025, description="Skip variants whose production started after this year (0 = off)")
 
     # ==================== DATABASE CONFIGURATION ====================
     POSTGRES_DB_HOST: str = Field(default="localhost", description="PostgreSQL host")
@@ -220,6 +232,10 @@ class Settings(BaseSettings):
         """Parsed, normalized (stripped + lowercased) fuelType exclude prefixes.
         Empty list = filtering disabled (store every fuel type)."""
         return [p.strip().lower() for p in self.VEHICLE_FUEL_EXCLUDE_PREFIXES.split(",") if p.strip()]
+
+    @property
+    def fuel_exclude_contains(self) -> list[str]:
+        return [w.strip().lower() for w in self.VEHICLE_FUEL_EXCLUDE_CONTAINS.split(",") if w.strip()]
 
     @property
     def is_production(self) -> bool:

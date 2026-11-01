@@ -14,12 +14,13 @@ The **only filter is make + model**, held in the **`rapid_api_dump_targets` tabl
 (the source of truth — one row per make/model with a `status`). It's populated once
 from `dump_targets.csv` (647 rows · 91 makes · 508 models) via `import-targets`;
 after that you add/edit/remove targets directly in Postgres. Targets are processed
-**A→Z by make then model** (one make finishes before the next). Everything under a
+**by `priority`** (1 = most listed on ContactCars), then **A→Z by make and model** for
+targets without one. The ContactCars top-100 list lives in `contactcars/`, see its README. Everything under a
 targeted model follows **store-all, complete the top-N**:
 
 | Layer | Rule |
 |---|---|
-| **Vehicles** | store **ALL** engine variants (ranked latest-first by construction date); fully crawl the top **`MAX_VEHICLES_PER_MODEL`** (`=0` → **all** non-diesel variants). Fuel-excluded variants (diesel) are **stored + flagged** (`is_fuel_excluded`) but skipped from the deep crawl |
+| **Vehicles** | store **ALL** engine variants (ranked latest-first by construction date); fully crawl the top **`MAX_VEHICLES_PER_MODEL`** (`=0` → **all** ranked variants). Fuel-excluded variants (diesel, ethanol, CNG) are **stored + flagged** (`is_fuel_excluded`); variants outside 2000 to 2025 and same-engine repeats are stored with `crawl_rank` NULL. All of them are skipped from the deep crawl |
 | **Categories** | **ALL** leaf categories of each crawled vehicle (every car part) |
 | **Articles** | store **ALL** articles per category (with `rank`); fetch full details only for the top **`MAX_ARTICLES_PER_CATEGORY` (=5)** |
 | **Details** | `article-complete-details` (one call) → specs + OEM + EAN + image + **all compatible vehicles** |
@@ -47,9 +48,11 @@ API endpoints + verified request/response JSON: see **`API_DUMP_REFERENCE.md`**.
    - `RAPIDAPI_RATE_LIMIT_PER_SEC=20`, `MONTHLY_REQUEST_HARD_LIMIT=100000`
    - `POSTGRES_DB_*` — database connection
    - `DEFAULT_LANG_ID=4`, `ARABIC_LANG_ID=42`, `DEFAULT_COUNTRY_FILTER_ID=80`, `BILINGUAL=true`
-   - `MAX_VEHICLES_PER_MODEL=0` (0 = crawl ALL non-diesel vehicles), `MAX_ARTICLES_PER_CATEGORY=2`
+   - `MAX_VEHICLES_PER_MODEL=6` (0 = crawl ALL ranked vehicles), `MAX_ARTICLES_PER_CATEGORY=3`
    - `CRAWL_MODE=depth_first` (one manufacturer fully, then next) or `breadth_first` (all manufacturers → models → vehicles → categories → articles → details). Switch + resume anytime.
    - `VEHICLE_FUEL_EXCLUDE_PREFIXES=diesel,ديزل` — fuel types stored-but-skipped from the deep crawl (both modes); empty = deep-crawl all fuels
+   - `VEHICLE_FUEL_EXCLUDE_CONTAINS=ethanol,…,cng,…` — same, but the word can appear anywhere in the fuel name
+   - `VEHICLE_YEAR_FROM=2000`, `VEHICLE_YEAR_TO=2025` — only variants built in these years are deep-crawled; 0 = off
    - S3 (for the image mirror, optional): `S3_ENABLED`, `AWS_*`, `S3_ARTICLE_MEDIA_FOLDER`
 3. Create the schema (**destructive — DROP + rebuild of all `rapid_api_*` tables**):
    ```bash

@@ -11,25 +11,28 @@ go "deep" on the important bits:**
 
 - **We only dump the cars we choose.** A simple list (`dump_targets.csv`) says which
   makes + models to dump. Nothing outside that list is touched.
-- **Per model → only the newest 5 cars get the full treatment.** A model can have
+- **Per model → only the newest 6 cars get the full treatment.** A model can have
   dozens of engine versions. We keep a record of all of them, but only fully crawl
-  the **latest 5**.
-- **Per car + category → only the top 2 parts get full details.** A brake category
+  the **latest 6** that are petrol, hybrid or electric, built 2000 to 2025, and not a
+  repeat of the same engine.
+- **Per car + category → only the top 3 parts get full details.** A brake category
   might list 800 parts. We save all 800 names, but only pull the **full detail
-  (specs, OEM numbers, fitment, etc.) for the top 2.**
+  (specs, OEM numbers, fitment, etc.) for the top 3.**
 - **We stop before the limit.** The plan allows 100,000 calls/month — we stop at
   **99,500** so we never overshoot, and pick up later where we left off.
 - **Everything is fetched in English + Arabic** at the same time.
 
 > Because we *save* everything and only *skip the deep part*, we can always go back
-> later and grab more (raise the "5" or the "2") without re-doing the work.
+> later and grab more (raise the "6" or the "3") without re-doing the work.
 
 The two limit numbers live in config:
 
 | Setting | Value | Means |
 |---|---|---|
-| `MAX_VEHICLES_PER_MODEL` | **5** | Newest 5 cars per model get fully crawled |
-| `MAX_ARTICLES_PER_CATEGORY` | **2** | Top 2 parts per (car, category) get full details |
+| `MAX_VEHICLES_PER_MODEL` | **6** | Newest 6 cars per model get fully crawled |
+| `MAX_ARTICLES_PER_CATEGORY` | **3** | Top 3 parts per (car, category) get full details |
+| `VEHICLE_YEAR_FROM` / `VEHICLE_YEAR_TO` | **2000 / 2025** | Cars built outside these years are saved but not crawled |
+| fuel filters | diesel, ethanol, CNG, hydrogen | These cars are saved but not crawled |
 | monthly cap | **99,500** | Calls/month before we pause |
 
 ---

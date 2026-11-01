@@ -582,7 +582,7 @@ async def _run_depth_first(
     vehicle_type_id: int,
 ) -> None:
     """Depth-first: N workers each atomically claim a target (make+model) and crawl it to
-    full depth before claiming the next. Make-major A→Z via the claim ordering. Claiming
+    full depth before claiming the next. Priority-first, then A→Z, via the claim ordering. Claiming
     is scoped to `vehicle_type_id` so this run only touches its own vehicle type."""
     attempted_incomplete: set = state["attempted_incomplete"]
     in_flight: set = set()  # claimed right now → not claimable again
@@ -901,6 +901,7 @@ async def _run_breadth_first(
         FROM rapid_api_vehicles v
         JOIN rapid_api_vehicle_types vt ON vt.vehicle_type_id = v.vehicle_type_id
         WHERE v.model_id = ANY($1::uuid[]) AND v.is_fuel_excluded = FALSE
+          AND v.crawl_rank IS NOT NULL
           AND ($2 = 0 OR v.crawl_rank <= $2) AND v.categories_fetched_at IS NULL
         """,
         scope_model_uuids,
@@ -917,6 +918,7 @@ async def _run_breadth_first(
         SELECT v.vehicle_id
         FROM rapid_api_vehicles v
         WHERE v.model_id = ANY($1::uuid[]) AND v.is_fuel_excluded = FALSE
+          AND v.crawl_rank IS NOT NULL
           AND ($2 = 0 OR v.crawl_rank <= $2)
           AND v.categories_fetched_at IS NOT NULL AND v.dump_state = $3
         """,
@@ -1050,6 +1052,7 @@ async def _crawl_target(
                 FROM rapid_api_vehicles v
                 JOIN rapid_api_vehicle_types vt ON vt.vehicle_type_id = v.vehicle_type_id
                 WHERE v.model_id = $1 AND v.dump_state = $2 AND v.is_fuel_excluded = FALSE
+                  AND v.crawl_rank IS NOT NULL
                   AND ($3 = 0 OR v.crawl_rank <= $3)
                 ORDER BY v.crawl_rank
                 LIMIT 1
@@ -1115,6 +1118,7 @@ async def _model_fully_done(model_id: str, veh_cap: int, art_cap: int) -> bool:
           (SELECT vehicles_fetched_at IS NOT NULL FROM rapid_api_models WHERE model_id = $1) AS veh,
           NOT EXISTS (SELECT 1 FROM rapid_api_vehicles
                       WHERE model_id = $1 AND dump_state = 'incomplete' AND is_fuel_excluded = FALSE
+                        AND crawl_rank IS NOT NULL
                         AND ($2 = 0 OR crawl_rank <= $2)) AS vehicles_done,
           NOT EXISTS (SELECT 1 FROM rapid_api_category_articles ca
                       JOIN rapid_api_articles a ON a.article_id = ca.article_id

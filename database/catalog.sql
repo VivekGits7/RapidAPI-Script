@@ -143,7 +143,7 @@ CREATE TABLE rapid_api_vehicles (
     capacity_tech         NUMERIC(10, 4),                -- API: capacityTech
     engine_codes          VARCHAR(255),                  -- API: engineCodes
     eng_id                INT,                           -- API: engId
-    crawl_rank            INT,                           -- 1 = newest (by construction date); top MAX_VEHICLES_PER_MODEL get crawled. NULL for fuel-excluded (diesel)
+    crawl_rank            INT,                           -- 1 = newest (by construction date); top MAX_VEHICLES_PER_MODEL get crawled. NULL = skipped: fuel, outside VEHICLE_YEAR_FROM..TO, or same-engine repeat
     is_fuel_excluded      BOOLEAN      NOT NULL DEFAULT FALSE,  -- TRUE = stored/listed but skipped from the deep crawl (categories/articles/details), e.g. diesel
     dump_state            rapid_api_dump_state NOT NULL DEFAULT 'incomplete',  -- complete = categories+articles+details done
     dump_stage            rapid_api_dump_stage NOT NULL DEFAULT 'listed',      -- listed→categories→articles→details
@@ -515,6 +515,7 @@ CREATE TABLE rapid_api_dump_targets (
     tec_model_id           INT          NOT NULL,        -- TecDoc model external id
     tec_model_name         VARCHAR(500),
     status                 VARCHAR(20)  NOT NULL DEFAULT 'pending',  -- pending | resumable | complete
+    priority               INT,                          -- crawl order, 1 = most listed on ContactCars; NULL goes last, A→Z
     started_at             TIMESTAMPTZ,
     completed_at           TIMESTAMPTZ,
     last_error             TEXT,

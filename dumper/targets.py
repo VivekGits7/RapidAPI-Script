@@ -5,9 +5,9 @@ is only a ONE-TIME import (`dumper.cli import-targets`) that loads rows into the
 (idempotent upsert on (tec_manufacturer_id, tec_model_id)); after that you add/edit/
 remove targets directly in Postgres and the script never reads the CSV again.
 
-The runner pulls targets from the table in A→Z order, finishing each make fully
-before the next. `status` moves pending → resumable → complete and is updated
-transactionally as work commits. Re-importing an edited CSV only ADDS new pending
+The runner pulls targets from the table by `priority` (1 = most popular, set from the
+CSV's optional priority column), then A→Z for rows without one. `status` moves
+pending → resumable → complete and is updated transactionally as work commits. Re-importing an edited CSV only ADDS new pending
 targets; existing statuses stay (resume-safe).
 """
 
@@ -75,7 +75,8 @@ async def import_targets_from_csv(
     # Dedup by (vehicle_type_id, tec_manufacturer_id, tec_model_id): the CSV repeats pairs,
     # and a single multi-row upsert can't touch the same conflict key twice. Last wins.
     by_key: dict[tuple, tuple] = {}
-    with open(resolved, newline="", encoding="utf-8") as f:
+    # utf-8-sig so a CSV re-saved from Excel (BOM) keeps its first header readable.
+    with open(resolved, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
             # Support both the PC header (tec_*) and the CV/bus header (make/manufacturer_id/model_*).
@@ -91,17 +92,20 @@ async def import_targets_from_csv(
                 tec_model_id,
                 (row.get("tec_model_name") or row.get("model_name") or "").strip() or None,
                 TargetStatus.PENDING.value,
+                _to_int(row.get("priority")),
             )
 
     # ONE batched upsert instead of N sequential round-trips (~230s → <1s on a
-    # remote DB). DO UPDATE refreshes names only; status is NOT touched → resume-safe.
+    # remote DB). DO UPDATE refreshes names + priority only; status is NOT touched → resume-safe.
+    # A CSV without a priority column keeps any priority already stored.
     seeded = await bulk_insert(
         "rapid_api_dump_targets",
-        ["vehicle_type_id", "tec_manufacturer_id", "tec_manufacturer_name", "tec_model_id", "tec_model_name", "status"],
+        ["vehicle_type_id", "tec_manufacturer_id", "tec_manufacturer_name", "tec_model_id", "tec_model_name", "status", "priority"],
         list(by_key.values()),
         """ON CONFLICT (vehicle_type_id, tec_manufacturer_id, tec_model_id) DO UPDATE SET
                tec_manufacturer_name = EXCLUDED.tec_manufacturer_name,
                tec_model_name        = EXCLUDED.tec_model_name,
+               priority              = COALESCE(EXCLUDED.priority, rapid_api_dump_targets.priority),
                updated_at            = NOW()""",
     )
 
@@ -121,7 +125,7 @@ async def claim_next_target(
     models: Optional[list[int]] = None,
     vehicle_type_id: Optional[int] = None,
 ) -> Optional[asyncpg.Record]:
-    """Atomically CLAIM the next not-complete target, A→Z by make then model.
+    """Atomically CLAIM the next not-complete target, by priority then A→Z by make and model.
 
     The claim flips status → 'resumable' in the same statement under
     FOR UPDATE SKIP LOCKED, so concurrent workers (or separate --makes
@@ -145,7 +149,7 @@ async def claim_next_target(
               AND NOT (target_id = ANY($3::uuid[]))
               AND (cardinality($4::int[]) = 0 OR tec_manufacturer_id = ANY($4::int[]))
               AND (cardinality($5::int[]) = 0 OR tec_model_id = ANY($5::int[]))
-            ORDER BY (status = $2) DESC,
+            ORDER BY (status = $2) DESC, priority ASC NULLS LAST,
                      tec_manufacturer_name ASC, tec_model_name ASC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
@@ -169,7 +173,7 @@ async def scope_targets(
     limit: int = 0,
     vehicle_type_id: Optional[int] = None,
 ) -> list:
-    """All not-complete targets in scope (A→Z by make then model), for breadth-first mode.
+    """All not-complete targets in scope (by priority, then A→Z by make and model), for breadth-first mode.
 
     Honors --makes / --models (tec ids), --limit (first N targets), and the active
     `vehicle_type_id` (PC/CV/... scoping). Complete targets are skipped — their data is
@@ -185,7 +189,7 @@ async def scope_targets(
           AND vehicle_type_id = $4
           AND (cardinality($2::int[]) = 0 OR tec_manufacturer_id = ANY($2::int[]))
           AND (cardinality($3::int[]) = 0 OR tec_model_id = ANY($3::int[]))
-        ORDER BY tec_manufacturer_name ASC, tec_model_name ASC
+        ORDER BY priority ASC NULLS LAST, tec_manufacturer_name ASC, tec_model_name ASC
         """,
         TargetStatus.COMPLETE.value,
         makes or [],

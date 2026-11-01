@@ -1,9 +1,9 @@
 """Per-model vehicles + categories (bilingual, store-all).
 
   vehicles:   API list-vehicles-types in EN + AR (parallel). Store ALL vehicles
-              of the model (minus any excluded by the fuelType filter, e.g. diesel),
-              ranked latest-first by construction date (crawl_rank). completed=FALSE
-              for all; the runner crawls only the top N.
+              of the model; the ones that pass the fuel, year and same-engine filters
+              are ranked latest-first by construction date (crawl_rank), the rest keep
+              crawl_rank NULL. completed=FALSE for all; the runner crawls only the top N.
   categories: API products-groups-variant-2 in EN + AR (parallel). Store the full
               tree with category_name_en/_ar + path_en/_ar per vehicle crawled.
 
@@ -42,8 +42,10 @@ async def fetch_vehicles_for_model(
 ) -> None:
     """Fetch ALL vehicles of the model (EN+AR), dedup, and store every one. fuelType-excluded
     variants (e.g. diesel — see settings.fuel_exclude_prefixes) are stored too but flagged
-    is_fuel_excluded=TRUE with crawl_rank=NULL (skipped from the deep crawl); the kept ones are
-    ranked 1..N by latest construction date. Sets vehicles_fetched_at."""
+    is_fuel_excluded=TRUE with crawl_rank=NULL (skipped from the deep crawl). Variants outside
+    VEHICLE_YEAR_FROM..VEHICLE_YEAR_TO and same-engine repeats are stored with crawl_rank=NULL
+    and is_fuel_excluded=FALSE. The kept ones are ranked 1..N by latest construction date.
+    Sets vehicles_fetched_at."""
     en_path = (
         f"/types/type-id/{api_type_id}/list-vehicles-types/{api_model_id}"
         f"/lang-id/{settings.DEFAULT_LANG_ID}/country-filter-id/{settings.DEFAULT_COUNTRY_FILTER_ID}"
@@ -95,18 +97,22 @@ async def fetch_vehicles_for_model(
     # deep crawl operates on the KEPT (non-excluded) set only — the cap is never wasted on
     # them. Checks EN + AR fuelType. Flip is_fuel_excluded=FALSE later to deep-crawl one.
     exclude_prefixes = settings.fuel_exclude_prefixes
+    exclude_contains = settings.fuel_exclude_contains
     kept: list[dict] = []
     excluded: list[dict] = []
+    out_of_years: list[dict] = []
     for it in items:
         ar = ar_by_id.get(int(it["vehicleId"]), {})
-        if exclude_prefixes and _fuel_excluded(it.get("fuelType"), ar.get("fuelType"), exclude_prefixes):
+        if _fuel_excluded(it.get("fuelType"), ar.get("fuelType"), exclude_prefixes, exclude_contains):
             excluded.append(it)
+        elif not _in_year_range(it, settings.VEHICLE_YEAR_FROM, settings.VEHICLE_YEAR_TO):
+            out_of_years.append(it)
         else:
             kept.append(it)
     if excluded:
         logger.info(
             f"  Fuel filter: {len(excluded)}/{len(items)} vehicles stored-but-skipped for model "
-            f"{model_id} (prefixes={exclude_prefixes})"
+            f"{model_id} (prefixes={exclude_prefixes}, contains={exclude_contains})"
         )
 
     # Rank the KEPT set latest-first: still-in-production (null end) first, then newest end,
@@ -121,14 +127,37 @@ async def fetch_vehicles_for_model(
         )
     kept.sort(key=_rank_key)
 
-    # Build all rows (kept ranked 1..N + excluded flagged), then ONE batched upsert.
+    # The API repeats one engine per market or date range; keep the newest copy only.
+    unique: list[dict] = []
+    duplicates: list[dict] = []
+    seen_engines: set[tuple] = set()
+    for it in kept:
+        key = _engine_key(it)
+        if key is not None and key in seen_engines:
+            duplicates.append(it)
+            continue
+        if key is not None:
+            seen_engines.add(key)
+        unique.append(it)
+    kept = unique
+    if out_of_years or duplicates:
+        logger.info(
+            f"  Year/duplicate filter: {len(out_of_years)} outside {settings.VEHICLE_YEAR_FROM}-"
+            f"{settings.VEHICLE_YEAR_TO} + {len(duplicates)} same-engine stored-but-skipped for model {model_id}"
+        )
+
+    # Build all rows (kept ranked 1..N, skipped with crawl_rank NULL), then ONE batched upsert.
     rows: list[tuple] = [
         _build_vehicle_row(it, ar_by_id, model_id, vehicle_type_id, rank, False)
         for rank, it in enumerate(kept, start=1)
     ] + [
         _build_vehicle_row(it, ar_by_id, model_id, vehicle_type_id, None, True)
         for it in excluded
+    ] + [
+        _build_vehicle_row(it, ar_by_id, model_id, vehicle_type_id, None, False)
+        for it in out_of_years + duplicates
     ]
+    skipped = len(excluded) + len(out_of_years) + len(duplicates)
     inserted = await bulk_insert(
         "rapid_api_vehicles",
         ["vehicle_id", "vehicles_external_id", "model_id", "vehicle_type_id", "lang_id", "country_filter_id",
@@ -141,7 +170,10 @@ async def fetch_vehicles_for_model(
     )
 
     if items:
-        msg = None if kept else f"all {len(excluded)} vehicles fuel-excluded for model {api_model_id}"
+        msg = None if kept else (
+            f"all {skipped} vehicles skipped for model {api_model_id} "
+            f"({len(excluded)} fuel, {len(out_of_years)} years, {len(duplicates)} duplicate)"
+        )
         await _mark_model_vehicles_done(model_id, "has_data", msg)
     else:
         # An empty list is the phantom-complete signature (e.g. a truck model crawled as PC) — warn loudly.
@@ -152,14 +184,14 @@ async def fetch_vehicles_for_model(
         await _mark_model_vehicles_done(model_id, "empty", f"0 vehicles for model {api_model_id}")
     logger.info(
         f"  Vehicles for model {model_id}: {inserted} stored in 1 batch "
-        f"({len(kept)} crawlable + {len(excluded)} skipped, of {len(items)} distinct)"
+        f"({len(kept)} crawlable + {skipped} skipped, of {len(items)} distinct)"
     )
 
 
 def _build_vehicle_row(it: dict, ar_by_id: dict, model_id: str, vehicle_type_id: str,
                        crawl_rank: Optional[int], is_fuel_excluded: bool) -> tuple:
-    """One rapid_api_vehicles row tuple. crawl_rank is NULL + is_fuel_excluded=TRUE for
-    fuel-skipped variants (stored/listed but not deep-crawled)."""
+    """One rapid_api_vehicles row tuple. crawl_rank is NULL for every skipped variant
+    (stored/listed but not deep-crawled); is_fuel_excluded=TRUE marks the fuel-skipped ones."""
     vid = int(it["vehicleId"])
     ar = ar_by_id.get(vid, {})
     # CV and bus rows carry powerKwStart / powerPsStart where PC rows carry powerKw / powerPs.
@@ -198,21 +230,54 @@ def _is_not_supported(value) -> bool:
     return isinstance(value, str) and any(p in value.strip().lower().rstrip(".") for p in _NOT_SUPPORTED)
 
 
-def _fuel_excluded(en_fuel: Optional[str], ar_fuel: Optional[str], prefixes: list[str]) -> bool:
+def _fuel_excluded(en_fuel: Optional[str], ar_fuel: Optional[str], prefixes: list[str],
+                   contains: Optional[list[str]] = None) -> bool:
     """True if this engine variant's fuel type should be dropped from the dump.
 
     A variant is excluded when its (stripped, lowercased) EN *or* AR fuelType STARTS
     WITH any configured prefix — e.g. prefix 'diesel' drops 'Diesel' and 'Diesel/Electric';
-    prefix 'ديزل' drops the Arabic equivalent. Petrol/Electric/LPG/hybrid-petrol are kept.
-    Empty prefix list = nothing excluded (store all fuels)."""
-    if not prefixes:
+    prefix 'ديزل' drops the Arabic equivalent — or CONTAINS any configured word, e.g.
+    'ethanol' drops 'Petrol/Ethanol'. Petrol/Electric/LPG/hybrid-petrol are kept.
+    Empty lists = nothing excluded (store all fuels)."""
+    contains = contains or []
+    if not prefixes and not contains:
         return False
     for val in (en_fuel, ar_fuel):
         if val:
             norm = val.strip().lower()
-            if any(norm.startswith(p) for p in prefixes):
+            if any(norm.startswith(p) for p in prefixes) or any(w in norm for w in contains):
                 return True
     return False
+
+
+def _in_year_range(it: dict, year_from: int, year_to: int) -> bool:
+    """True if the construction interval overlaps year_from..year_to. A missing start or
+    end counts as open, so undated variants are kept. 0 turns that side off."""
+    start = _parse_date(it.get("constructionIntervalStart"))
+    end = _parse_date(it.get("constructionIntervalEnd"))
+    if year_to and start and start.year > year_to:
+        return False
+    if year_from and end and end.year < year_from:
+        return False
+    return True
+
+
+def _engine_key(it: dict) -> Optional[tuple]:
+    """Same name + body + fuel + capacity + power + engine codes = the same parts. The name is
+    part of the key because it carries 4x4 and similar drivetrain differences. None when
+    capacity or power is missing, so a thin row is never merged into another."""
+    capacity = _parse_decimal(it.get("capacityTech"))
+    power = _parse_decimal(it.get("powerPs") or it.get("powerPsStart"))
+    if capacity is None or power is None:
+        return None
+    return (
+        " ".join((it.get("typeEngineName") or "").lower().split()),
+        (it.get("bodyType") or "").strip().lower(),
+        (it.get("fuelType") or "").strip().lower(),
+        capacity,
+        power,
+        (it.get("engineCodes") or "").replace(" ", "").upper(),
+    )
 
 
 async def _mark_model_vehicles_done(model_id: str, status: str, message: Optional[str]) -> None:
