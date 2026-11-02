@@ -28,20 +28,24 @@ def setup_logging(level: Optional[str] = None, log_format: Optional[str] = None)
 
     formatter = logging.Formatter(log_format)
 
+    # Windows defaults to cp1252, which cannot write the arrows and Arabic text in our log lines.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
     app_handler = RotatingFileHandler(
-        f"{LOGS_DIR}/app.log", maxBytes=10 * 1024 * 1024, backupCount=5
+        f"{LOGS_DIR}/app.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     app_handler.setLevel(logging.INFO)
     app_handler.setFormatter(formatter)
     root_logger.addHandler(app_handler)
 
     error_handler = RotatingFileHandler(
-        f"{LOGS_DIR}/error.log", maxBytes=10 * 1024 * 1024, backupCount=5
+        f"{LOGS_DIR}/error.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(formatter)
@@ -49,7 +53,7 @@ def setup_logging(level: Optional[str] = None, log_format: Optional[str] = None)
 
     # Dumper-specific log channel (most chatter during a long crawl ends up here)
     dumper_handler = RotatingFileHandler(
-        f"{LOGS_DIR}/dumper.log", maxBytes=20 * 1024 * 1024, backupCount=10
+        f"{LOGS_DIR}/dumper.log", maxBytes=20 * 1024 * 1024, backupCount=10, encoding="utf-8"
     )
     dumper_handler.setLevel(logging.INFO)
     dumper_handler.setFormatter(formatter)
@@ -57,7 +61,7 @@ def setup_logging(level: Optional[str] = None, log_format: Optional[str] = None)
 
     access_logger = logging.getLogger("uvicorn.access")
     access_handler = RotatingFileHandler(
-        f"{LOGS_DIR}/access.log", maxBytes=10 * 1024 * 1024, backupCount=5
+        f"{LOGS_DIR}/access.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     access_handler.setFormatter(formatter)
     access_logger.addHandler(access_handler)
