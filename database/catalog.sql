@@ -120,7 +120,7 @@ CREATE INDEX idx_rapid_api_models_image_s3_pending ON rapid_api_models(model_id)
 -- ==========================================================================
 CREATE TABLE rapid_api_vehicles (
     vehicle_id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    vehicles_external_id  INT          NOT NULL UNIQUE,  -- API: vehicleId
+    vehicles_external_id  INT          NOT NULL,         -- API: vehicleId
     model_id              UUID         NOT NULL REFERENCES rapid_api_models(model_id)              ON DELETE CASCADE,
     vehicle_type_id       UUID         NOT NULL REFERENCES rapid_api_vehicle_types(vehicle_type_id) ON DELETE CASCADE,
     lang_id               INT          NOT NULL,
@@ -149,9 +149,11 @@ CREATE TABLE rapid_api_vehicles (
     dump_stage            rapid_api_dump_stage NOT NULL DEFAULT 'listed',      -- listed→categories→articles→details
     categories_fetched_at TIMESTAMPTZ,                   -- DFS cursor
     created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    -- The API numbers car, truck and bus vehicleIds separately, so one id can exist once per type.
+    CONSTRAINT rapid_api_vehicles_external_id_type_key UNIQUE (vehicles_external_id, vehicle_type_id)
 );
--- vehicles_external_id is UNIQUE → already indexed.
+-- (vehicles_external_id, vehicle_type_id) is UNIQUE → lookups by vehicles_external_id are already indexed.
 CREATE INDEX idx_rapid_api_vehicles_model_id           ON rapid_api_vehicles(model_id);
 CREATE INDEX idx_rapid_api_vehicles_vehicle_type_id    ON rapid_api_vehicles(vehicle_type_id);
 CREATE INDEX idx_rapid_api_vehicles_eng_id             ON rapid_api_vehicles(eng_id);

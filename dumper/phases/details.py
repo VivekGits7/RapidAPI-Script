@@ -168,13 +168,15 @@ async def _persist_from_complete_details(article_id: str, external_id: int,
     if isinstance(ean_obj, dict):
         ean = ean_obj.get("eanNumbers")
     image = art.get("s3image")
-    await _mark_article_complete(article_id, product_name_ar, ean, image, raw=art)
 
     ar_specs = ar_art.get("allSpecifications") if isinstance(ar_art, dict) else None
     n_specs = await _persist_specs(article_id, art.get("allSpecifications"), ar_specs)
     n_oem = await _persist_oem(article_id, art.get("oemNo"))
     ar_compat = ar_art.get("compatibleCars") if isinstance(ar_art, dict) else None
     n_compat = await _persist_compat(article_id, art.get("compatibleCars"), ar_compat)
+
+    # Marked last so a kill or DB drop mid-write leaves the part incomplete and it gets retried.
+    await _mark_article_complete(article_id, product_name_ar, ean, image, raw=art)
 
     logger.info(f"  Article {external_id} complete (complete-details): {n_specs} specs, {n_oem} OEM, {n_compat} compat")
     return True
@@ -212,23 +214,30 @@ async def _complete_article_via_fallback(article_id: str, external_id: int) -> b
     ean_obj = en_data.get("articleEanNo")
     if isinstance(ean_obj, dict):
         ean = ean_obj.get("eanNumbers")
-    # image=None → COALESCE keeps the URL the articles-list phase already stored.
-    await _mark_article_complete(article_id, product_name_ar, ean, None, raw=en_data)
+
+    # A compat timeout must stay retryable, marking first would read it as "fits no cars" forever.
+    n_compat = await _persist_fallback_compat(article_id, external_id)
+    if n_compat is None:
+        return False
 
     # Individual-details puts specs/OEM/EAN at the TOP LEVEL (not under "article").
     ar_specs = ar_data.get("articleAllSpecifications") if isinstance(ar_data, dict) else None
     n_specs = await _persist_specs(article_id, en_data.get("articleAllSpecifications"), ar_specs)
     n_oem = await _persist_oem(article_id, en_data.get("articleOemNo"))
-    n_compat = await _persist_fallback_compat(article_id, external_id)
+
+    # Marked last so a kill or DB drop mid-write leaves the part incomplete and it gets retried.
+    # image=None → COALESCE keeps the URL the articles-list phase already stored.
+    await _mark_article_complete(article_id, product_name_ar, ean, None, raw=en_data)
 
     logger.info(f"  Article {external_id} complete (fallback): {n_specs} specs, {n_oem} OEM, {n_compat} compat")
     return True
 
 
-async def _persist_fallback_compat(article_id: str, external_id: int) -> int:
+async def _persist_fallback_compat(article_id: str, external_id: int) -> Optional[int]:
     """Fetch compatible cars from the POST twin of complete-details (individual-details
     carries no fitment) and persist them. EN + AR for the localized typeEngineName.
-    Same short retry cap and timeout as the GET aggregate, it is the same heavy payload."""
+    Same short retry cap and timeout as the GET aggregate, it is the same heavy payload.
+    Returns None when the EN call failed, so the caller can leave the article for the next run."""
     retries = settings.COMPLETE_DETAILS_MAX_RETRIES
     timeout = settings.COMPLETE_DETAILS_TIMEOUT
     en_form = {"articleId": str(external_id), "typeId": str(crawl_type_id(settings.DEFAULT_TYPE_ID)),
@@ -242,6 +251,8 @@ async def _persist_fallback_compat(article_id: str, external_id: int) -> int:
     else:
         en_data = await api_post(_FALLBACK_COMPAT_PATH, form_body=en_form, max_retries=retries, timeout=timeout)
         ar_data = None
+    if en_data is None:
+        return None
     return await _persist_compat(article_id, _extract_compat(en_data), _extract_compat(ar_data))
 
 

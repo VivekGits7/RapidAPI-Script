@@ -158,7 +158,7 @@ async def fetch_vehicles_for_model(
         for it in out_of_years + duplicates
     ]
     skipped = len(excluded) + len(out_of_years) + len(duplicates)
-    inserted = await bulk_insert(
+    await bulk_insert(
         "rapid_api_vehicles",
         ["vehicle_id", "vehicles_external_id", "model_id", "vehicle_type_id", "lang_id", "country_filter_id",
          "manufacturer_name", "model_name", "type_engine_name_en", "type_engine_name_ar",
@@ -166,7 +166,7 @@ async def fetch_vehicles_for_model(
          "fuel_type_en", "fuel_type_ar", "body_type_en", "body_type_ar", "number_of_cylinders",
          "capacity_lt", "capacity_tech", "engine_codes", "eng_id", "crawl_rank", "is_fuel_excluded"],
         rows,
-        "ON CONFLICT (vehicles_external_id) DO NOTHING",
+        "ON CONFLICT (vehicles_external_id, vehicle_type_id) DO NOTHING",
     )
 
     if items:
@@ -182,8 +182,17 @@ async def fetch_vehicles_for_model(
             "— its target will complete with NO data; verify the vehicle type is right"
         )
         await _mark_model_vehicles_done(model_id, "empty", f"0 vehicles for model {api_model_id}")
+    # Count what is really in the DB, a DO NOTHING conflict drops rows without any error.
+    saved = (await execute_query(
+        "SELECT count(*) AS n FROM rapid_api_vehicles WHERE model_id = $1::uuid", str(model_id),
+    ))[0]["n"]
+    if saved < len(items):
+        logger.warning(
+            f"Vehicles NOT SAVED for model {model_id}: API listed {len(items)}, DB has {saved} "
+            "— a unique key is dropping rows"
+        )
     logger.info(
-        f"  Vehicles for model {model_id}: {inserted} stored in 1 batch "
+        f"  Vehicles for model {model_id}: {saved} in DB "
         f"({len(kept)} crawlable + {skipped} skipped, of {len(items)} distinct)"
     )
 
