@@ -334,6 +334,11 @@ For **every leaf category** of the vehicle, the script pulls the list of article
 parts). Leaf categories are fetched several at a time for speed. This is **English only** —
 the Arabic part-name comes from the dictionary loaded back in Phase 0.
 
+The list comes 100 parts a page, A to Z, with `totalPages` in the response. The first page of
+a long category can stop inside the letter A, so `?page=2` and on are read only while the
+category has fewer `PREFERRED_PART_BRANDS` parts than `MAX_ARTICLES_PER_CATEGORY`. Everything
+read is stored; pages after that point are not fetched.
+
 - `GET /articles/list/type-id/1/vehicle-id/{vehicleId}/category-id/{categoryId}/lang-id/4`
 
 <details><summary>response (real, trimmed — Air Filter category)</summary>

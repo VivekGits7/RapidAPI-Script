@@ -33,7 +33,12 @@ logger = get_logger("dumper.crawl")
 _cat_id_cache: dict[int, str] = {}
 
 _AWD_NAME = re.compile(r"4x4|4wd|awd|4-?matic|quattro|xdrive|all-wheel", re.IGNORECASE)
-_SPORT_NAME = re.compile(r"\bamg\b|\brs\d*\b|\bgti\b|\bopc\b|\bnismo\b|\bcupra\b|\btype r\b", re.IGNORECASE)
+_SPORT_NAME = re.compile(
+    r"\bamg\b|\brs\d*\b|\bgti\b|\bopc\b|\bnismo\b|\bcupra\b|\btype r\b"
+    r"|\bm[2-8]\b|\bm\s?\d{3}\s?[ide]\b|\bs[1-8]\b|\bsq\d\b|\bsrt\d*\b|\bst\b|\bvxr\b|\bjcw\b|\bsti\b|\bgr\b"
+    r"|\b\d\.\d r\b(?!-design)",
+    re.IGNORECASE,
+)
 
 
 # ==================== VEHICLES (store all, rank latest-first) ====================

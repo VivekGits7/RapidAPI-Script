@@ -31,7 +31,7 @@ The two limit numbers live in config:
 |---|---|---|
 | `MAX_VEHICLES_PER_MODEL` | **6** | 6 versions per model get fully crawled, one per engine size first, sports versions last |
 | `MAX_ARTICLES_PER_CATEGORY` | **3** | 3 parts per (car, category) get full details |
-| `PREFERRED_PART_BRANDS` | **49 brands** | These brands get those 3 slots first, one part per brand. Empty means first 3 in the A to Z list |
+| `PREFERRED_PART_BRANDS` | **49 brands** | These brands get those 3 slots first, one part per brand. Empty means first 3 in the A to Z list. The list comes 100 parts a page, and later pages are read only until 3 of these brands' parts are found |
 | `VEHICLE_YEAR_FROM` / `VEHICLE_YEAR_TO` | **2000 / 2025** | Cars built outside these years are saved but not crawled |
 | fuel filters | diesel, ethanol, CNG, hydrogen | These cars are saved but not crawled |
 | monthly cap | **99,500** | Calls/month before we pause |

@@ -8,6 +8,9 @@ product_name_ar comes from the rapid_api_product_names dictionary (productId →
 name, fetched once in the reference phase) — NOT from a second lang-42 list
 call. That alone removes ~37% of all dump API calls (see OPTIMIZATION_PLAN.md §3.5).
 
+The list comes 100 parts a page. Later pages are read only while the category has fewer
+preferred-brand parts than detail slots, so long lists do not cost a call per page.
+
 Speed: leaf categories fan out LIST_FANOUT at a time; each category's articles
 are upserted in ONE bulk round-trip (was ~120 per category).
 
@@ -125,6 +128,18 @@ async def _fetch_article_list(vehicle_id: str, category_id: str, vca) -> bool:
         await log_unparsed(path, UnparsedEntity.ARTICLE, items, UnparsedReason.NON_LIST_RESPONSE, parent_ref=parent)
         return True
 
+    page, total_pages = 1, _parse_int(data.get("totalPages")) or 1
+    while page < total_pages and _needs_next_page(items):
+        page += 1
+        more = await api_get(path, params={"page": page})
+        if more is None:
+            return False
+        more_items = more.get("articles") if isinstance(more, dict) else None
+        if not isinstance(more_items, list):
+            await log_unparsed(path, UnparsedEntity.ARTICLE, more_items, UnparsedReason.NON_LIST_RESPONSE, parent_ref=parent)
+            return False
+        items = items + more_items
+
     # Collect distinct articles with their rank (position in the list).
     seen: set[int] = set()
     to_store: list[tuple[int, int, dict]] = []  # (rank, ext_aid, item)
@@ -198,6 +213,23 @@ async def _fetch_article_list(vehicle_id: str, category_id: str, vca) -> bool:
     )
     logger.info(f"  Articles v{api_vid}/c{api_cat_id}: {len(link_rows)} stored ({len(to_store)} listed, 2 batches)")
     return True
+
+
+def _needs_next_page(items: list) -> bool:
+    """The API lists 100 parts a page from A to Z, so a first page can hold no BOSCH or HELLA at all.
+    Keep reading until the detail slots can all go to preferred brands. A cap of 0 wants every part,
+    and with no preferred brands the first page is enough."""
+    cap = settings.MAX_ARTICLES_PER_CATEGORY
+    if not cap:
+        return True
+    preferred = set(settings.preferred_part_brands)
+    if not preferred:
+        return False
+    listed = sum(
+        1 for item in items
+        if isinstance(item, dict) and (item.get("supplierName") or "").upper() in preferred
+    )
+    return listed < cap
 
 
 def _parse_int(value: Any) -> Optional[int]:

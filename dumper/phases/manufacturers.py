@@ -37,12 +37,19 @@ def _parse_date(value) -> Optional[_dt.date]:
         return None
 
 
+def _parse_int(value) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 async def fetch_models_meta(api_type_id: int, mfg_external_id: int, country_filter_id: int) -> dict:
     """Return {modelId: {"name_ar", "year_from", "year_to"}} for a make.
 
-    ONE models-list call per make per run (cached) — it carries both the AR name
-    (localizes body-style words: Bus→حافلة) AND modelYearFrom/modelYearTo (language-
-    neutral dates). Returns {} on any failure.
+    One models-list read per make per run (cached), every page of it — it carries both
+    the AR name (localizes body-style words: Bus→حافلة) AND modelYearFrom/modelYearTo
+    (language-neutral dates). Returns {} on any failure; a partial read is not cached.
     """
     key = (api_type_id, mfg_external_id, country_filter_id)
     if key in _models_meta_cache:
@@ -54,6 +61,17 @@ async def fetch_models_meta(api_type_id: int, mfg_external_id: int, country_filt
     )
     data = await api_get(path)
     models = data.get("models") if isinstance(data, dict) else None
+    complete = isinstance(models, list)
+    # The list comes 100 models a page in no name order, so a make like Toyota spans 7 pages.
+    total_pages = _parse_int(data.get("totalPages")) if complete else None
+    for page in range(2, (total_pages or 1) + 1):
+        more = await api_get(path, params={"page": page})
+        more_models = more.get("models") if isinstance(more, dict) else None
+        if not isinstance(more_models, list):
+            logger.warning(f"Models list page {page} failed for make {mfg_external_id}, years stay partial")
+            complete = False
+            break
+        models = models + more_models
     if isinstance(models, list):
         for m in models:
             if not isinstance(m, dict):
@@ -68,7 +86,8 @@ async def fetch_models_meta(api_type_id: int, mfg_external_id: int, country_filt
                     "year_from": _parse_date(m.get("modelYearFrom")),
                     "year_to": _parse_date(m.get("modelYearTo")),
                 }
-    _models_meta_cache[key] = out
+    if complete:
+        _models_meta_cache[key] = out
     return out
 
 
