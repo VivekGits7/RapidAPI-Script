@@ -36,6 +36,7 @@ guvrun -m dumper.cli status --vehicle-type pc   # the running job
 ```
 
 What is done and what is left lives in `rapid_api_dump_targets.status`: pending,
-resumable or complete. Each model crawls its newest 6 petrol, hybrid or electric
-versions built 2000 to 2025, with same-engine repeats skipped. Expect roughly 820k API
-calls for the whole list.
+resumable or complete. Each model crawls 6 petrol, hybrid or electric versions built 2000
+to 2025, one per engine size first, with same-engine repeats skipped. Expect roughly 1.1M
+API calls for the whole list, about 3,000 per model measured on the real run. Coupe,
+convertible and shooting brake models were moved to the back by adding 1000 to their priority.

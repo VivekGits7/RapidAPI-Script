@@ -20,9 +20,9 @@ targeted model follows **store-all, complete the top-N**:
 
 | Layer | Rule |
 |---|---|
-| **Vehicles** | store **ALL** engine variants (ranked latest-first by construction date); fully crawl the top **`MAX_VEHICLES_PER_MODEL`** (`=0` → **all** ranked variants). Fuel-excluded variants (diesel, ethanol, CNG) are **stored + flagged** (`is_fuel_excluded`); variants outside 2000 to 2025 and same-engine repeats are stored with `crawl_rank` NULL. All of them are skipped from the deep crawl |
+| **Vehicles** | store **ALL** engine variants (ranked to reach every engine size first, plain petrol and two-wheel drive preferred, sports versions last); fully crawl the top **`MAX_VEHICLES_PER_MODEL`** (`=0` → **all** ranked variants). Fuel-excluded variants (diesel, ethanol, CNG) are **stored + flagged** (`is_fuel_excluded`); variants outside 2000 to 2025 and same-engine repeats are stored with `crawl_rank` NULL. All of them are skipped from the deep crawl |
 | **Categories** | **ALL** leaf categories of each crawled vehicle (every car part) |
-| **Articles** | store **ALL** articles per category (with `rank`); fetch full details only for the top **`MAX_ARTICLES_PER_CATEGORY` (=5)** |
+| **Articles** | store **ALL** articles per category (with `rank`); fetch full details only for **`MAX_ARTICLES_PER_CATEGORY` (=3)** per car and category, `PREFERRED_PART_BRANDS` first |
 | **Details** | `article-complete-details` (one call) → specs + OEM + EAN + image + **all compatible vehicles** |
 
 **Progress is tracked by two enums on vehicles + articles:**

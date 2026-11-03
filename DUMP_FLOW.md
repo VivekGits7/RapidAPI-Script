@@ -241,12 +241,15 @@ the Arabic engine/fuel/body text.
    name, which is how `Petrol/Ethanol` and `Petrol/Compressed Natural Gas (CNG)` are caught.
 3. **Year filter**: variants whose production does not overlap
    `VEHICLE_YEAR_FROM`..`VEHICLE_YEAR_TO` (2000 to 2025) are stored with crawl_rank NULL.
-4. **Rank the rest latest-first**: still-in-production engines first, then newest end-date,
+4. **Sort the rest latest-first**: still-in-production engines first, then newest end-date,
    then newest start-date.
 5. **Same-engine repeats**: the API lists one engine several times for different markets or
    date ranges. Same name + body + fuel + capacity + power + engine codes keeps only the newest
    copy; the others are stored with crawl_rank NULL.
-6. **Only the top `MAX_VEHICLES_PER_MODEL` ranked variants get deep-crawled** in the
+6. **Rank to cover engine sizes**: one version of every engine size before a second of any.
+   Plain petrol beats hybrid or gas, two-wheel drive beats AWD, and sports versions like AMG or
+   RS come after every regular one. This only runs for models whose versions were not fetched yet.
+7. **Only the top `MAX_VEHICLES_PER_MODEL` ranked variants get deep-crawled** in the
    next phases (the rest stay saved as records, crawl later by raising the limit).
    **`MAX_VEHICLES_PER_MODEL=0` means no cap — crawl ALL ranked variants.** The current
    setting is 6, sized for the ContactCars top-100 run. A row with crawl_rank NULL is never
@@ -537,7 +540,7 @@ flowchart TD
                        SEEN by the API              SAVED              DEEP-CRAWLED
   Vehicles per model     ~24 variants      →    all ~24 stored   →   top MAX_VEHICLES_PER_MODEL (0 = all non-diesel)
   Categories per vehicle  hundreds         →    whole tree       →   all leaves
-  Articles per category   hundreds         →    all stored       →   top MAX_ARTICLES_PER_CATEGORY detailed
+  Articles per category   hundreds         →    all stored       →   MAX_ARTICLES_PER_CATEGORY detailed, PREFERRED_PART_BRANDS first
 ```
 
 Everything the API shows us is saved. The `MAX_VEHICLES_PER_MODEL` / `MAX_ARTICLES_PER_CATEGORY`

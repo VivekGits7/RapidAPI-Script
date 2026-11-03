@@ -138,6 +138,7 @@ class Settings(BaseSettings):
     # targeted model — ALL vehicles, ALL categories, ALL articles — is dumped.
     # This optional list just skips known-junk TecDoc categories; empty = skip nothing.
     BLOCKED_CATEGORY_EXTERNAL_IDS: str = Field(default="", description="Comma-separated TecDoc category ids to skip (optional; empty = none)")
+    PREFERRED_PART_BRANDS: str = Field(default="", description="Comma-separated part brands that get the detail slots first, best first (empty = list order)")
 
     # ==================== MEDIA + S3 IMAGE MIRRORING ====================
     # Primary article image (api_image_url) is always captured during the article
@@ -184,6 +185,10 @@ class Settings(BaseSettings):
                 except ValueError:
                     pass
         return out
+
+    @property
+    def preferred_part_brands(self) -> list[str]:
+        return [tok.strip().upper() for tok in (self.PREFERRED_PART_BRANDS or "").split(",") if tok.strip()]
 
     @property
     def database_url(self) -> str:

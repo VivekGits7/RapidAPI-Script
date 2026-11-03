@@ -41,7 +41,7 @@ from dumper.phases.deep_crawl import (
     fetch_categories_for_vehicle,
     fetch_vehicles_for_model,
 )
-from dumper.phases.details import complete_articles_for_model
+from dumper.phases.details import complete_articles_for_model, pending_detail_articles
 from dumper.phases.manufacturers import (
     fetch_manufacturer_image,
     fetch_model_image,
@@ -1111,7 +1111,7 @@ async def _mark_vehicle_complete(vehicle_id: str) -> None:
 
 
 async def _model_fully_done(model_id: str, veh_cap: int, art_cap: int) -> bool:
-    """Done = vehicles fetched + all top-N vehicles complete + all their top-rank articles complete."""
+    """Done = vehicles fetched + all top-N vehicles complete + every article holding a detail slot complete."""
     row = await execute_query_one(
         """
         SELECT
@@ -1119,18 +1119,14 @@ async def _model_fully_done(model_id: str, veh_cap: int, art_cap: int) -> bool:
           NOT EXISTS (SELECT 1 FROM rapid_api_vehicles
                       WHERE model_id = $1 AND dump_state = 'incomplete' AND is_fuel_excluded = FALSE
                         AND crawl_rank IS NOT NULL
-                        AND ($2 = 0 OR crawl_rank <= $2)) AS vehicles_done,
-          NOT EXISTS (SELECT 1 FROM rapid_api_category_articles ca
-                      JOIN rapid_api_articles a ON a.article_id = ca.article_id
-                      JOIN rapid_api_vehicles v ON v.vehicle_id = ca.vehicle_id
-                      WHERE v.model_id = $1 AND ($3 = 0 OR ca.rank <= $3)
-                        AND a.dump_state = 'incomplete') AS articles_done
+                        AND ($2 = 0 OR crawl_rank <= $2)) AS vehicles_done
         """,
         model_id,
         veh_cap,
-        art_cap,
     )
-    return bool(row and row["veh"] and row["vehicles_done"] and row["articles_done"])
+    if not (row and row["veh"] and row["vehicles_done"]):
+        return False
+    return not await pending_detail_articles(model_id, art_cap)
 
 
 # ==================== STATUS / CONTROL ====================

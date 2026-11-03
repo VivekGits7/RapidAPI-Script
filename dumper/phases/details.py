@@ -1,7 +1,7 @@
 """Phase: Article complete-details (replaces the old specs/OEM batch enrich).
 
-For the top MAX_ARTICLES_PER_CATEGORY (lowest rank) articles of a model that are
-still dump_state='incomplete', call:
+For the MAX_ARTICLES_PER_CATEGORY articles per (vehicle, category) of a model, preferred
+brands first (see pending_detail_articles), that are still dump_state='incomplete', call:
 
     GET /articles/article-complete-details/type-id/{typeId}
         ?articleId=&langId=&countryFilterId=
@@ -45,6 +45,43 @@ _FALLBACK_DETAILS_PATH = "/articles/details/article-id/{article_id}/lang-id/{lan
 _FALLBACK_COMPAT_PATH = "/articles/article-id-complete-details"
 
 
+async def pending_detail_articles(model_id: str, cap: int) -> list:
+    """The model's incomplete articles that hold a detail slot. Each (vehicle, category) gives
+    its `cap` slots to PREFERRED_PART_BRANDS first, one part per brand before a second of any,
+    then to the rest in list order, because the API list is A to Z and would favour A brands."""
+    return await execute_query(
+        # SQL
+        """
+        SELECT DISTINCT article_id, articles_external_id
+        FROM (
+            SELECT article_id, articles_external_id, dump_state,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY vehicle_id, category_id
+                       ORDER BY brand_order IS NULL,
+                                CASE WHEN brand_order IS NULL THEN 0 ELSE brand_turn END,
+                                brand_order,
+                                rank
+                   ) AS slot
+            FROM (
+                SELECT a.article_id, a.articles_external_id, a.dump_state,
+                       ca.vehicle_id, ca.category_id, ca.rank,
+                       array_position($4::text[], upper(a.supplier_name)) AS brand_order,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ca.vehicle_id, ca.category_id, a.supplier_name
+                           ORDER BY ca.rank
+                       ) AS brand_turn
+                FROM rapid_api_category_articles ca
+                JOIN rapid_api_articles a ON a.article_id = ca.article_id
+                JOIN rapid_api_vehicles v ON v.vehicle_id = ca.vehicle_id
+                WHERE v.model_id = $1
+            ) listed
+        ) picked
+        WHERE ($2 = 0 OR slot <= $2) AND dump_state = $3
+        """,
+        model_id, cap, DumpEntityState.INCOMPLETE.value, settings.preferred_part_brands,
+    )
+
+
 async def complete_articles_for_model(model_id: str, check_stop=None) -> bool:
     """Fetch complete-details for the model's top-rank incomplete articles with a
     SLIDING WINDOW of DETAILS_FANOUT articles (each article is an EN+AR pair):
@@ -56,27 +93,12 @@ async def complete_articles_for_model(model_id: str, check_stop=None) -> bool:
     turns truthy (each completed article is already committed → resume continues
     from the next incomplete one).
     """
-    cap = settings.MAX_ARTICLES_PER_CATEGORY
     fanout = max(1, settings.DETAILS_FANOUT)
 
-    # Fetch ALL pending top-rank articles for the model in ONE scan. No ORDER BY → the
-    # planner drives from the model's vehicles (~30ms) instead of the global article_id
-    # index. The old per-slot `ORDER BY … LIMIT` re-scanned deeper each refill → O(N²) →
-    # the query eventually blew past the 60s command_timeout. Articles only go
+    # Fetch ALL pending top-rank articles for the model in ONE scan. Articles only go
     # incomplete→complete and none are added during this phase, so one fetch is complete;
     # anything still incomplete after a failure is picked up on the next run.
-    pending = await execute_query(
-        """
-        SELECT DISTINCT a.article_id, a.articles_external_id
-        FROM rapid_api_category_articles ca
-        JOIN rapid_api_articles a ON a.article_id = ca.article_id
-        JOIN rapid_api_vehicles v ON v.vehicle_id = ca.vehicle_id
-        WHERE v.model_id = $1
-          AND ($2 = 0 OR ca.rank <= $2)
-          AND a.dump_state = $3
-        """,
-        model_id, cap, DumpEntityState.INCOMPLETE.value,
-    )
+    pending = await pending_detail_articles(model_id, settings.MAX_ARTICLES_PER_CATEGORY)
     queue = [(r["article_id"], int(r["articles_external_id"])) for r in pending]
     if not queue:
         return True

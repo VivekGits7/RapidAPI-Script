@@ -11,6 +11,7 @@ Cursors: rapid_api_models.vehicles_fetched_at, rapid_api_vehicles.categories_fet
 """
 
 import asyncio
+import re
 import uuid
 from datetime import date, datetime
 from typing import Any, Optional
@@ -31,6 +32,9 @@ logger = get_logger("dumper.crawl")
 # constant within a run; a rare concurrent miss just re-upserts idempotently.
 _cat_id_cache: dict[int, str] = {}
 
+_AWD_NAME = re.compile(r"4x4|4wd|awd|4-?matic|quattro|xdrive|all-wheel", re.IGNORECASE)
+_SPORT_NAME = re.compile(r"\bamg\b|\brs\d*\b|\bgti\b|\bopc\b|\bnismo\b|\bcupra\b|\btype r\b", re.IGNORECASE)
+
 
 # ==================== VEHICLES (store all, rank latest-first) ====================
 async def fetch_vehicles_for_model(
@@ -44,8 +48,8 @@ async def fetch_vehicles_for_model(
     variants (e.g. diesel — see settings.fuel_exclude_prefixes) are stored too but flagged
     is_fuel_excluded=TRUE with crawl_rank=NULL (skipped from the deep crawl). Variants outside
     VEHICLE_YEAR_FROM..VEHICLE_YEAR_TO and same-engine repeats are stored with crawl_rank=NULL
-    and is_fuel_excluded=FALSE. The kept ones are ranked 1..N by latest construction date.
-    Sets vehicles_fetched_at."""
+    and is_fuel_excluded=FALSE. The kept ones are ranked 1..N to cover every engine size first,
+    see _spread_by_engine_size. Sets vehicles_fetched_at."""
     en_path = (
         f"/types/type-id/{api_type_id}/list-vehicles-types/{api_model_id}"
         f"/lang-id/{settings.DEFAULT_LANG_ID}/country-filter-id/{settings.DEFAULT_COUNTRY_FILTER_ID}"
@@ -139,7 +143,7 @@ async def fetch_vehicles_for_model(
         if key is not None:
             seen_engines.add(key)
         unique.append(it)
-    kept = unique
+    kept = _spread_by_engine_size(unique)
     if out_of_years or duplicates:
         logger.info(
             f"  Year/duplicate filter: {len(out_of_years)} outside {settings.VEHICLE_YEAR_FROM}-"
@@ -269,6 +273,36 @@ def _in_year_range(it: dict, year_from: int, year_to: int) -> bool:
     if year_from and end and end.year < year_from:
         return False
     return True
+
+
+def _spread_by_engine_size(newest_first: list[dict]) -> list[dict]:
+    """Order versions so the crawl cap reaches every engine size before a second version of any.
+    Inside a size, plain petrol beats hybrid or gas and two-wheel drive beats AWD, then newest wins.
+    Sports versions come after every regular one. Newest-first alone filled the cap with new hybrids
+    and skipped engines like the Corolla 1.6."""
+    def preference(it: dict) -> tuple:
+        fuel = (it.get("fuelType") or "").strip().lower()
+        return (0 if fuel == "petrol" else 1, 1 if _AWD_NAME.search(it.get("typeEngineName") or "") else 0)
+
+    def spread(versions: list[dict]) -> list[dict]:
+        by_size: dict[Optional[float], list[dict]] = {}
+        for it in sorted(versions, key=preference):
+            capacity = _parse_decimal(it.get("capacityLt"))
+            by_size.setdefault(round(capacity, 1) if capacity is not None else None, []).append(it)
+
+        # Sizes with a plain two-wheel-drive petrol go first, smaller engines ahead, unknown size last.
+        groups = sorted(
+            by_size.items(),
+            key=lambda group: (preference(group[1][0]), group[0] is None, group[0] or 0),
+        )
+        ordered: list[dict] = []
+        for turn in range(max((len(group) for _size, group in groups), default=0)):
+            ordered.extend(group[turn] for _size, group in groups if turn < len(group))
+        return ordered
+
+    regular = [it for it in newest_first if not _SPORT_NAME.search(it.get("typeEngineName") or "")]
+    sports = [it for it in newest_first if _SPORT_NAME.search(it.get("typeEngineName") or "")]
+    return spread(regular) + spread(sports)
 
 
 def _engine_key(it: dict) -> Optional[tuple]:
