@@ -58,44 +58,60 @@ def _get_pool() -> asyncpg.Pool:
     return _pool
 
 
+_DROP_RETRIES = 3
+
+
+async def _on_fresh_connection(op: Callable[[asyncpg.Connection], Awaitable[Any]]) -> Any:
+    """Run op on a pooled connection, and again on a new one when the link to the DB drops mid query.
+
+    Every dumper write is an upsert or sets fixed values, so running it again is safe. Timeouts are
+    not retried, since the slow query may still be running on the server.
+    """
+    for attempt in range(1, _DROP_RETRIES + 1):
+        try:
+            async with _get_pool().acquire() as conn:
+                return await op(conn)
+        except TimeoutError:
+            raise
+        except (asyncpg.ConnectionDoesNotExistError, OSError) as e:
+            if attempt == _DROP_RETRIES:
+                raise
+            logger.warning(f"DB connection dropped ({type(e).__name__}), retry {attempt}/{_DROP_RETRIES - 1}")
+            await asyncio.sleep(2 * attempt + random.random())
+
+
 # ==================== READ HELPERS ====================
 
 async def execute_query(query: str, *args: Any) -> list[asyncpg.Record]:
-    async with _get_pool().acquire() as conn:
-        return await conn.fetch(query, *args)
+    return await _on_fresh_connection(lambda conn: conn.fetch(query, *args))
 
 
 async def execute_query_one(query: str, *args: Any) -> Optional[asyncpg.Record]:
-    async with _get_pool().acquire() as conn:
-        return await conn.fetchrow(query, *args)
+    return await _on_fresh_connection(lambda conn: conn.fetchrow(query, *args))
 
 
 async def execute_scalar(query: str, *args: Any) -> Any:
     """Run a query and return a single scalar (e.g. `nextval`, `count(*)`)."""
-    async with _get_pool().acquire() as conn:
-        return await conn.fetchval(query, *args)
+    return await _on_fresh_connection(lambda conn: conn.fetchval(query, *args))
 
 
 # ==================== WRITE HELPERS ====================
 
 async def execute_command(query: str, *args: Any) -> str:
     """Run an INSERT/UPDATE/DELETE without returning a row. Returns the status string."""
-    async with _get_pool().acquire() as conn:
-        return await conn.execute(query, *args)
+    return await _on_fresh_connection(lambda conn: conn.execute(query, *args))
 
 
 async def execute_command_with_return(query: str, *args: Any) -> Optional[asyncpg.Record]:
     """Run a write that uses RETURNING. Returns the first returned row (or None)."""
-    async with _get_pool().acquire() as conn:
-        return await conn.fetchrow(query, *args)
+    return await _on_fresh_connection(lambda conn: conn.fetchrow(query, *args))
 
 
 async def execute_many(query: str, rows: list[tuple]) -> None:
     """Batch insert/update. Significantly faster than looping execute_command."""
     if not rows:
         return
-    async with _get_pool().acquire() as conn:
-        await conn.executemany(query, rows)
+    await _on_fresh_connection(lambda conn: conn.executemany(query, rows))
 
 
 # The PG wire protocol sends a statement's bind-parameter COUNT as a signed int16,
@@ -108,7 +124,7 @@ def _chunk_size(ncols: int) -> int:
     return max(1, _MAX_BIND_PARAMS // max(1, ncols))
 
 
-_DEADLOCK_RETRIES = 4
+_DEADLOCK_RETRIES = 10
 
 
 async def _retry_on_deadlock(run: Callable[[], Awaitable[Any]]) -> Any:
@@ -125,7 +141,7 @@ async def _retry_on_deadlock(run: Callable[[], Awaitable[Any]]) -> Any:
             if attempt == _DEADLOCK_RETRIES:
                 raise
             logger.warning(f"Deadlock on a bulk write, retry {attempt}/{_DEADLOCK_RETRIES - 1}")
-            await asyncio.sleep(0.2 * attempt + random.random() * 0.3)
+            await asyncio.sleep(min(0.3 * attempt, 2.0) + random.random() * 0.5)
 
 
 async def bulk_insert(table: str, columns: list[str], rows: list[tuple], conflict: str = "") -> int:
@@ -140,16 +156,15 @@ async def bulk_insert(table: str, columns: list[str], rows: list[tuple], conflic
     ncols = len(columns)
     col_sql = ", ".join(columns)
     chunk = _chunk_size(ncols)
-    async with _get_pool().acquire() as conn:
-        for start in range(0, len(rows), chunk):
-            batch = rows[start:start + chunk]
-            values_sql = ", ".join(
-                "(" + ", ".join(f"${r * ncols + c + 1}" for c in range(ncols)) + ")"
-                for r in range(len(batch))
-            )
-            flat = [v for row in batch for v in row]
-            statement = f"INSERT INTO {table} ({col_sql}) VALUES {values_sql} {conflict}"
-            await _retry_on_deadlock(lambda: conn.execute(statement, *flat))
+    for start in range(0, len(rows), chunk):
+        batch = rows[start:start + chunk]
+        values_sql = ", ".join(
+            "(" + ", ".join(f"${r * ncols + c + 1}" for c in range(ncols)) + ")"
+            for r in range(len(batch))
+        )
+        flat = [v for row in batch for v in row]
+        statement = f"INSERT INTO {table} ({col_sql}) VALUES {values_sql} {conflict}"
+        await _on_fresh_connection(lambda conn: _retry_on_deadlock(lambda: conn.execute(statement, *flat)))
     return len(rows)
 
 
@@ -166,17 +181,16 @@ async def bulk_insert_returning(
     col_sql = ", ".join(columns)
     chunk = _chunk_size(ncols)
     out: list[asyncpg.Record] = []
-    async with _get_pool().acquire() as conn:
-        for start in range(0, len(rows), chunk):
-            batch = rows[start:start + chunk]
-            values_sql = ", ".join(
-                "(" + ", ".join(f"${r * ncols + c + 1}" for c in range(ncols)) + ")"
-                for r in range(len(batch))
-            )
-            flat = [v for row in batch for v in row]
-            statement = f"INSERT INTO {table} ({col_sql}) VALUES {values_sql} {conflict} RETURNING {returning}"
-            recs = await _retry_on_deadlock(lambda: conn.fetch(statement, *flat))
-            out.extend(recs)
+    for start in range(0, len(rows), chunk):
+        batch = rows[start:start + chunk]
+        values_sql = ", ".join(
+            "(" + ", ".join(f"${r * ncols + c + 1}" for c in range(ncols)) + ")"
+            for r in range(len(batch))
+        )
+        flat = [v for row in batch for v in row]
+        statement = f"INSERT INTO {table} ({col_sql}) VALUES {values_sql} {conflict} RETURNING {returning}"
+        recs = await _on_fresh_connection(lambda conn: _retry_on_deadlock(lambda: conn.fetch(statement, *flat)))
+        out.extend(recs)
     return out
 
 
